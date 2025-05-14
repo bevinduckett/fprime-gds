@@ -71,6 +71,20 @@ class FlaskEndpointRamHistory(SelfCleaningRamHistory):
             return self.count_values.get(start, self.count)
 
 
+class NonClearingHistory(FlaskEndpointRamHistory):
+    def retrieve(self, start=None, limit=None):
+        # Start from the beginning
+        with self.lock:
+            if start not in self.retrieved_cursors:
+                self.count_offsets[start] = self.count
+                self.retrieved_cursors[start] = 0
+            return super().retrieve(start, limit)
+
+    def clear(self, start=None):
+        # Do not clear history
+        pass
+
+
 def setup_pipelined_components(debug: bool, pipeline_arguments):
     """
     Setup the standard pipeline and related components. This is done once, and then the resulting singletons are
@@ -89,7 +103,7 @@ def setup_pipelined_components(debug: bool, pipeline_arguments):
         or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
     ):
         pipeline = StandardPipeline()
-        pipeline.histories.implementation = FlaskEndpointRamHistory
+        pipeline.histories.implementation = NonClearingHistory
         pipeline = StandardPipelineParser.pipeline_factory(pipeline_arguments, pipeline)
         __PIPELINE = pipeline
     assert __PIPELINE is not None, "Main thread did not setup pipeline appropriately"
