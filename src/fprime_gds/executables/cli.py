@@ -1083,6 +1083,22 @@ class FileHandlingParser(ParserBase):
                 "type": str,
                 "help": "Directory to save command sequence binaries, on the remote FSW. Default: %(default)s",
             },
+            ("--file-uplink-cooldown",): {
+                "dest": "file_uplink_cooldown",
+                "action": "store",
+                "default": 0,
+                "required": False,
+                "type": float,
+                "help": "Cooldown period between file uplink packets. Default: %(default)s S",
+            },
+            ("--file-uplink-chunk-size",): {
+                "dest": "file_uplink_chunk_size",
+                "action": "store",
+                "default": 256,
+                "required": False,
+                "type": int,
+                "help": "Size of the data payload for a file uplink. Default: %(default)s",
+            },
         }
 
     def handle_arguments(self, args, **kwargs):
@@ -1121,6 +1137,8 @@ class StandardPipelineParser(CompositeParser):
             "file_store": args_ns.files_storage_directory,
             "logging_prefix": args_ns.logs,
             "data_logging_enabled": not args_ns.disable_data_logging,
+            "cooldown": args_ns.file_uplink_cooldown,
+            "chunk": args_ns.file_uplink_chunk_size,
         }
         pipeline = pipeline if pipeline else StandardPipeline()
         pipeline.transport_implementation = args_ns.connection_transport

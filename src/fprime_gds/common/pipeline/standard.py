@@ -45,7 +45,6 @@ class StandardPipeline:
         self.distributor = None
         self.client_socket = None
         self.logger = None
-        self.dictionary_path = None
         self.up_store = None
         self.down_store = None
 
@@ -62,6 +61,8 @@ class StandardPipeline:
         file_store,
         logging_prefix=None,
         data_logging_enabled=True,
+        cooldown=0.5,
+        chunk=256,
     ):
         """
         Setup the standard pipeline for moving data from the middleware layer through the GDS layers using the standard
@@ -72,6 +73,8 @@ class StandardPipeline:
         :param file_store: uplink/downlink storage directory
         :param logging_prefix: logging prefix. Defaults to not logging at all.
         :param packet_spec: location of packetized telemetry XML specification.
+        :param cooldown: cooldown period between file uplink packets
+        :param chunk: size of the data payload for a file uplink
         """
         self.distributor = fprime_gds.common.distributor.distributor.Distributor()
         self.client_socket = self.__transport_type()
@@ -96,6 +99,8 @@ class StandardPipeline:
             self.coders.file_decoder,
             self.distributor,
             logging_prefix,
+            cooldown=cooldown,
+            chunk=chunk,
         )
         # Register distributor to client socket
         self.client_socket.register(self.distributor)
@@ -244,3 +249,8 @@ class StandardPipeline:
     def dictionaries(self):
         """Dictionaries member"""
         return self.__dictionaries
+
+    @property
+    def dictionary_path(self):
+        """Dictionary file path"""
+        return self.dictionaries.dictionary_path if self.dictionaries else None

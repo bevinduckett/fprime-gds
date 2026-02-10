@@ -68,6 +68,7 @@ combuffer
 commandsi
 configs
 Consolas
+cooldown
 creatingdocsetswithdoxygen
 csum
 ctx
@@ -131,6 +132,7 @@ ENDC
 endcond
 errorhandler
 errorrs
+ert
 ev
 Evn
 evr
@@ -140,6 +142,7 @@ exts
 fastentrypoints
 fbuild
 fd
+fdp
 FEEDNAME
 feq
 FFCC
