@@ -232,7 +232,9 @@ class ThreadedTCPRequestHandler(socketserver.StreamRequestHandler):
         header = self.recv(5)
 
         if len(header) == 0:
-            print(f"Header information is empty, client {self.name.decode(DATA_ENCODING)} exiting.")
+            print(
+                f"Header information is empty, client {self.name.decode(DATA_ENCODING)} exiting."
+            )
             return header
         if header == b"List\n":
             return b"List"
@@ -351,7 +353,7 @@ class ThreadedUDPRequestHandler(socketserver.BaseRequestHandler):
         """
 
         # Read the header data from the socket either A5A5 or List
-        (header, packet) = self.readHeader(packet)
+        header, packet = self.readHeader(packet)
 
         # If the received header is an empty string, connection closed, exit loop
         if not header:
@@ -425,6 +427,7 @@ class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     socket id's for writing to destinations.
     """
 
+    allow_reuse_address = True
     dest_obj = {}
     lock_obj = threading.Lock()
 
@@ -506,14 +509,12 @@ def main(argv=None):
         )
 
         # process options
-        (opts, args) = parser.parse_args(argv)
+        opts, args = parser.parse_args(argv)
 
         HOST = opts.host
         PORT = opts.port
         server = ThreadedTCPServer((HOST, PORT), ThreadedTCPRequestHandler)
         udp_server = ThreadedUDPServer((HOST, PORT), ThreadedUDPRequestHandler)
-        # Hopefully this will allow address reuse and server to restart immediately
-        server.allow_reuse_address = True
         SERVER = server
         LOCK = server.lock_obj
 
@@ -543,7 +544,7 @@ def main(argv=None):
 
     except Exception as e:
         indent = len(program_name) * " "
-        sys.stderr.write(f'{program_name}: {repr(e)}' + "\n")
+        sys.stderr.write(f"{program_name}: {repr(e)}" + "\n")
         sys.stderr.write(indent + "  for help use --help\n")
         return 2
 

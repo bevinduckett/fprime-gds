@@ -8,7 +8,7 @@ from fprime_gds.common.utils.config_manager import ConfigBadTypeException, Confi
 from fprime_gds.common.communication.framing import FramerDeframer
 from fprime_gds.plugin.definitions import gds_plugin_implementation
 
-import crc
+import crcmod
 
 
 class SpaceDataLinkFramerDeframer(FramerDeframer):
@@ -25,13 +25,12 @@ class SpaceDataLinkFramerDeframer(FramerDeframer):
 
     # As per CCSDS standard, use CRC-16 CCITT config with init value
     # all 1s and final XOR value of 0x0000
-    CRC_CCITT_CONFIG = crc.Configuration(
-        width=16,
-        polynomial=0x1021,
-        init_value=0xFFFF,
-        final_xor_value=0x0000,
+    CCITT_CRC_FUNCTION = crcmod.mkCrcFun(
+        0x11021,  # poly with implicit leading 1
+        initCrc=0xFFFF,
+        xorOut=0x0000,
+        rev=False,
     )
-    CRC_CALCULATOR = crc.Calculator(CRC_CCITT_CONFIG)
 
     # For backwards compatibility if not found in dictionary (loaded by ConfigManager)
     FALLBACK_SCID = 0x44
@@ -57,7 +56,11 @@ class SpaceDataLinkFramerDeframer(FramerDeframer):
                 f" loaded from the dictionary. CLI={scid}, Dictionary={dict_scid}",
                 file=sys.stderr,
             )
-        if frame_size is not None and dict_frame_size is not None and frame_size != dict_frame_size:
+        if (
+            frame_size is not None
+            and dict_frame_size is not None
+            and frame_size != dict_frame_size
+        ):
             print(
                 f"[WARNING] TM frame size value specified through CLI argument does not match value"
                 f" loaded from the dictionary. CLI={frame_size}, Dictionary={dict_frame_size}",
@@ -91,20 +94,21 @@ class SpaceDataLinkFramerDeframer(FramerDeframer):
 
         # First 16 bits:
         header_val1_u16 = (
-            (0 << 14) |  # TF version number (2 bits)
-            (1 << 13) |  # Bypass FARM (1 bit)
-            (0 << 12) |  # Type-D (1 bit)
-            (0 << 10) |  # Reserved (2 bits)
-            ((self.scid & 0x3FF))  # SCID (10 bits)
+            (0 << 14)  # TF version number (2 bits)
+            | (1 << 13)  # Bypass FARM (1 bit)
+            | (0 << 12)  # Type-D (1 bit)
+            | (0 << 10)  # Reserved (2 bits)
+            | ((self.scid & 0x3FF))  # SCID (10 bits)
         )
         # Second 16 bits:
-        header_val2_u16 = (
-            ((self.vcid & 0x3F) << 10) |  # VCID (6 bits)
-            (length & 0x3FF)              # Frame length (10 bits)
-        )
+        header_val2_u16 = ((self.vcid & 0x3F) << 10) | (  # VCID (6 bits)
+            length & 0x3FF
+        )  # Frame length (10 bits)
         # 8 bit sequence number - always 0 in bypass FARM mode
         header_val3_u8 = 0
-        header_bytes = struct.pack(">HHB", header_val1_u16, header_val2_u16, header_val3_u8)
+        header_bytes = struct.pack(
+            ">HHB", header_val1_u16, header_val2_u16, header_val3_u8
+        )
         full_bytes_no_crc = header_bytes + space_packet_bytes
         assert (
             len(header_bytes) == self.TC_HEADER_SIZE
@@ -114,7 +118,7 @@ class SpaceDataLinkFramerDeframer(FramerDeframer):
         ), "Malformed packet generated"
 
         full_bytes = full_bytes_no_crc + struct.pack(
-            ">H", self.CRC_CALCULATOR.checksum(full_bytes_no_crc)
+            ">H", SpaceDataLinkFramerDeframer.CCITT_CRC_FUNCTION(full_bytes_no_crc)
         )
         return full_bytes
 
@@ -132,9 +136,10 @@ class SpaceDataLinkFramerDeframer(FramerDeframer):
 
     def deframe(self, data, no_copy=False):
         """Deframe TM frames"""
-        discarded = b""
+        discarded = bytearray()
         if not no_copy:
             data = copy.copy(data)
+        data = memoryview(data)
         # Continue until there is not enough data for the header, or until a packet is found (return)
         while len(data) >= self.frame_size:
             # Read header information
@@ -150,19 +155,19 @@ class SpaceDataLinkFramerDeframer(FramerDeframer):
             # Spacecraft ID and Virtual Channel ID match, so we look at end of frame for CRC
             crc_offset = self.frame_size - self.TM_TRAILER_SIZE
             transmitted_crc = struct.unpack_from(">H", data, crc_offset)[0]
-            if transmitted_crc == self.CRC_CALCULATOR.checksum(data[:crc_offset]):
+            if transmitted_crc == SpaceDataLinkFramerDeframer.CCITT_CRC_FUNCTION(
+                data[:crc_offset]
+            ):
                 # CRC is valid, so we return the deframed data
                 deframed_data_len = (
-                    self.frame_size
-                    - self.TM_TRAILER_SIZE
-                    - self.TM_HEADER_SIZE
+                    self.frame_size - self.TM_TRAILER_SIZE - self.TM_HEADER_SIZE
                 )
-                deframed = struct.unpack_from(
-                    f">{deframed_data_len}s", data, self.TM_HEADER_SIZE
-                )[0]
+                deframed = bytes(
+                    data[self.TM_HEADER_SIZE : self.TM_HEADER_SIZE + deframed_data_len]
+                )
                 # Consume the fixed size frame
                 data = data[self.frame_size :]
-                return deframed, data, discarded
+                return deframed, bytes(data), bytes(discarded)
 
             print(
                 "[WARNING] Checksum validation failed.",
@@ -172,7 +177,7 @@ class SpaceDataLinkFramerDeframer(FramerDeframer):
             discarded += data[0:1]
             data = data[1:]
             continue
-        return None, data, discarded
+        return None, bytes(data), bytes(discarded)
 
     @classmethod
     def get_arguments(cls):

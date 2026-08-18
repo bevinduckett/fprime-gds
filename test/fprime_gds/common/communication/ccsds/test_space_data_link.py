@@ -9,9 +9,12 @@ SCID_TEST_VALUE = 0x77
 VCID_TEST_VALUE = 5
 FRAME_SIZE_TEST_VALUE = 2222
 
+
 @pytest.fixture
 def framer_deframer():
-    return SpaceDataLinkFramerDeframer(scid=SCID_TEST_VALUE, vcid=VCID_TEST_VALUE, frame_size=FRAME_SIZE_TEST_VALUE)
+    return SpaceDataLinkFramerDeframer(
+        scid=SCID_TEST_VALUE, vcid=VCID_TEST_VALUE, frame_size=FRAME_SIZE_TEST_VALUE
+    )
 
 
 def test_frame_valid_data(framer_deframer):
@@ -53,12 +56,13 @@ def test_deframe_valid_frame(framer_deframer):
         )
         + payload
     )
-    crc = framer_deframer.CRC_CALCULATOR.checksum(input_data_no_crc)
+    crc = SpaceDataLinkFramerDeframer.CCITT_CRC_FUNCTION(input_data_no_crc)
     input_data = input_data_no_crc + struct.pack(">H", crc)
     deframed_data, remaining_data, discarded = framer_deframer.deframe(input_data)
     assert deframed_data == payload
     assert remaining_data == b""
     assert discarded == b""
+
 
 def test_deframe_incorrect_crc(framer_deframer):
     """Test deframing a valid TM frame."""
@@ -82,7 +86,9 @@ def test_deframe_incorrect_crc(framer_deframer):
         )
         + payload
     )
-    crc = framer_deframer.CRC_CALCULATOR.checksum(input_data_no_crc) + 1  # Intentionally incorrect CRC
+    crc = (
+        SpaceDataLinkFramerDeframer.CCITT_CRC_FUNCTION(input_data_no_crc) + 1
+    )  # Intentionally incorrect CRC
     input_data = input_data_no_crc + struct.pack(">H", crc)
     deframed_data, remaining_data, discarded = framer_deframer.deframe(input_data)
     assert deframed_data is None

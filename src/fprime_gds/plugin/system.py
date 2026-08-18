@@ -8,6 +8,7 @@ using entrypoints.
 
 @author lestarch
 """
+
 import copy
 import os
 import importlib
@@ -18,7 +19,6 @@ from typing import Iterable, List, Union
 import pluggy
 
 from fprime_gds.plugin.definitions import Plugin, PluginType, PROJECT_NAME
-
 
 # Handy constants
 LOGGER = logging.getLogger(__name__)
@@ -218,12 +218,25 @@ class Plugins(object):
                 FramerDeframer,
                 FpFramerDeframer,
             )
-            from fprime_gds.common.communication.ccsds.chain import SpacePacketSpaceDataLinkFramerDeframer
+            from fprime_gds.common.communication.ccsds.chain import (
+                SpacePacketSpaceDataLinkFramerDeframer,
+                SpacePacketSdlsSpaceDataLinkFramerDeframer,
+            )
+            from fprime_gds.common.communication.ccsds.space_packet import (
+                SpacePacketFramerDeframer,
+            )
+            from fprime_gds.common.communication.ccsds.space_data_link import (
+                SpaceDataLinkFramerDeframer,
+            )
+            from fprime_gds.common.communication.ccsds.sdls import (
+                SdlsCleartextFramerDeframer,
+            )
             from fprime_gds.common.communication.adapters.base import (
                 BaseAdapter,
                 NoneAdapter,
             )
             from fprime_gds.common.communication.adapters.ip import IpAdapter
+            from fprime_gds.common.communication.adapters.udp import UdpAdapter
             from fprime_gds.executables.apps import CustomDataHandlers
 
             try:
@@ -234,14 +247,26 @@ class Plugins(object):
                 "framing": {
                     "class": FramerDeframer,
                     "type": PluginType.SELECTION,
-                    "built-in": [FpFramerDeframer, SpacePacketSpaceDataLinkFramerDeframer],
+                    "built-in": [
+                        FpFramerDeframer,
+                        SpacePacketSpaceDataLinkFramerDeframer,
+                        SpacePacketSdlsSpaceDataLinkFramerDeframer,
+                        SpacePacketFramerDeframer,
+                        SpaceDataLinkFramerDeframer,
+                        SdlsCleartextFramerDeframer,
+                    ],
                 },
                 "communication": {
                     "class": BaseAdapter,
                     "type": PluginType.SELECTION,
                     "built-in": [
                         adapter
-                        for adapter in [NoneAdapter, IpAdapter, SerialAdapter]
+                        for adapter in [
+                            NoneAdapter,
+                            IpAdapter,
+                            UdpAdapter,
+                            SerialAdapter,
+                        ]
                         if adapter is not None
                     ],
                 },

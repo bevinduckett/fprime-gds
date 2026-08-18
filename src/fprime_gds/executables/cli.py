@@ -19,12 +19,13 @@ import platform
 import re
 import sys
 import pathlib
+from importlib.metadata import version
 
 import yaml
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Required to set the checksum as a module variable
 import fprime_gds.common.logger
@@ -38,7 +39,6 @@ from fprime_gds.plugin.definitions import PluginType
 from fprime_gds.plugin.system import Plugins, PluginsNotLoadedException
 from fprime_gds.common.zmq_transport import ZmqClient
 
-
 GUIS = ["none", "html"]
 
 
@@ -50,12 +50,16 @@ class ParserBase(ABC):
     handling arguments.
     """
 
-    DESCRIPTION = None
+    DESCRIPTION: Optional[str] = None
 
     @property
-    def description(self):
+    def description(self) -> str:
         """Return parser description"""
-        return self.DESCRIPTION if self.DESCRIPTION else "Unknown command line parser"
+        return (
+            self.DESCRIPTION
+            if self.DESCRIPTION is not None
+            else "Unknown command line parser"
+        )
 
     @abstractmethod
     def get_arguments(self) -> Dict[Tuple[str, ...], Dict[str, Any]]:
@@ -439,6 +443,23 @@ class ConfigDrivenParser(ParserBase):
             description=description, arguments=arguments, **kwargs
         )
         config_options = ns_config.config_values.get("command-line-options", {})
+        # Configuration files may be shared between tools; drop options unsupported by this tool
+        supported_flags = {
+            flag
+            for flags in CompositeParser(parser_classes, description).get_arguments()
+            for flag in flags
+        }
+        unsupported = [
+            option
+            for option in (config_options or {})
+            if f"--{option}" not in supported_flags
+        ]
+        for option in unsupported:
+            print(
+                f"[WARNING] Ignoring configured option '{option}' not supported by this tool",
+                file=sys.stderr,
+            )
+            del config_options[option]
         config_args = ConfigDrivenParser.flatten_options(config_options)
 
         # Argparse allows repeated (overridden) arguments, thus the CLI override is accomplished by providing
@@ -478,7 +499,11 @@ class ConfigDrivenParser(ParserBase):
                 "default": self.get_default_configuration(),
                 "type": Path,
                 "help": "Argument configuration file path. [default: %(default)s]",
-            }
+            },
+            ("-v", "--version"): {
+                "action": "version",
+                "version": version("fprime_gds"),
+            },
         }
 
     def handle_arguments(self, args, **kwargs):
@@ -963,6 +988,14 @@ class LogDeployParser(ParserBase):
                 "default": False,
                 "help": "Disable logging of each data item",
             },
+            ("--log-prefix",): {
+                "dest": "log_prefix",
+                "action": "store",
+                "default": None,
+                "type": str,
+                "help": "Prefix for log directory names (e.g. 'fprime-gds-<timestamp>'). "
+                "Auto-detected from tool name when not specified. Use '' to disable. [default: auto-detect]",
+            },
         }
 
     def handle_arguments(self, args, **kwargs):
@@ -974,11 +1007,18 @@ class LogDeployParser(ParserBase):
         """
         # Get logging dir
         if not args.log_directly:
-            args.logs = os.path.abspath(
-                os.path.join(
-                    args.logs, datetime.datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
-                )
+            # Auto-detect prefix from tool name if not explicitly provided
+            if args.log_prefix is None:
+                tool_name = os.path.basename(sys.argv[0])
+                if tool_name.endswith(".py"):
+                    tool_name = tool_name[:-3]
+                args.log_prefix = tool_name
+
+            timestamp = datetime.datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
+            dir_name = (
+                f"{args.log_prefix}-{timestamp}" if args.log_prefix else timestamp
             )
+            args.logs = os.path.abspath(os.path.join(args.logs, dir_name))
             # A dated directory has been set, all log handling must now be direct
             args.log_directly = True
 
@@ -1017,10 +1057,10 @@ class MiddleWareParser(ParserBase):
             ("--zmq-transport",): {
                 "dest": "zmq_transport",
                 "nargs": 2,
-                "help": "Pair of URls used with --zmq to setup ZeroMQ transportation [default: %(default)s]",
+                "help": "Pair of URLs used with --zmq to setup ZeroMQ transportation [default: %(default)s]",
                 "default": [
-                    "ipc:///tmp/fprime-server-in",
-                    "ipc:///tmp/fprime-server-out",
+                    f"ipc:///tmp/fprime-server-in-{getpass.getuser()}",
+                    f"ipc:///tmp/fprime-server-out-{getpass.getuser()}",
                 ],
                 "metavar": ("serverInUrl", "serverOutUrl"),
             },
@@ -1182,14 +1222,6 @@ class FileHandlingParser(ParserBase):
                 "type": str,
                 "help": "Directory to store uplink and downlink files. Default: %(default)s",
             },
-            ("--remote-sequence-directory",): {
-                "dest": "remote_sequence_directory",
-                "action": "store",
-                "default": "/seq",
-                "required": False,
-                "type": str,
-                "help": "Directory to save command sequence binaries, on the remote FSW. Default: %(default)s",
-            },
             ("--file-uplink-cooldown",): {
                 "dest": "file_uplink_cooldown",
                 "action": "store",
@@ -1219,6 +1251,30 @@ class FileHandlingParser(ParserBase):
         return args
 
 
+class HistoryParser(ParserBase):
+    """Parser for the pipeline's in-memory history behavior"""
+
+    DESCRIPTION = "History options"
+
+    def get_arguments(self) -> Dict[Tuple[str, ...], Dict[str, Any]]:
+        """Arguments controlling how the pipeline's history is retained"""
+        return {
+            ("--no-clear-history",): {
+                "dest": "no_clear_history",
+                "action": "store_true",
+                "default": False,
+                "help": "Do not clear history as it is retrieved by GDS clients (e.g. the web UI). By "
+                "default, history is cleared once seen so a client connecting after data has "
+                "already arrived (a race between the deployment starting and the UI loading) will "
+                "miss it. Setting this retains all history for the lifetime of the process.",
+            },
+        }
+
+    def handle_arguments(self, args, **kwargs):
+        """Handle arguments as parsed"""
+        return args
+
+
 class StandardPipelineParser(CompositeParser):
     """Standard pipeline argument parser: combination of MiddleWare and"""
 
@@ -1228,6 +1284,7 @@ class StandardPipelineParser(CompositeParser):
         FileHandlingParser,
         MiddleWareParser,
         LogDeployParser,
+        HistoryParser,
     ]
 
     def __init__(self):
@@ -1323,6 +1380,11 @@ class GdsParser(ParserBase):
                 "type": str,
                 "help": "Set the GUI server address [default: %(default)s]",
             },
+            ("--skip-browser-open",): {
+                "dest": "browser_auto_open",
+                "action": "store_false",
+                "help": "Run server without auto-launching the default web browser",
+            },
         }
 
     def handle_arguments(self, args, **kwargs):
@@ -1361,6 +1423,12 @@ class BinaryDeployment(DetectionParser):
                     "required": False,
                     "type": str,
                     "help": "Path to app to run. Overrides automatic app detection.",
+                },
+                ("--application-arguments",): {
+                    "dest": "application_arguments",
+                    "nargs": "*",
+                    "default": None,
+                    "help": "Arguments to pass to the application binary, replacing the default -p/-a arguments.",
                 },
             },
         }

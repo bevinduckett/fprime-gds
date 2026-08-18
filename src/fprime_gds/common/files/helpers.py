@@ -11,6 +11,7 @@ enable both file uplink and downlink to share the same structures. This includes
 
 @author mstarch, and Blake A. Harriman's work
 """
+
 import datetime
 import enum
 import logging
@@ -131,7 +132,9 @@ class TransmitFile:
         self.__log_dir = log_dir
         self.__log_handler = None
         self.__packets = sorted(list(set(packets))) if packets is not None else None
-        self.__transmit_packets = [packet for packet in self.__packets] if packets is not None else None
+        self.__transmit_packets = (
+            [packet for packet in self.__packets] if packets is not None else None
+        )
 
     def open(self, mode):
         """
@@ -149,7 +152,7 @@ class TransmitFile:
 
         self.__state = "TRANSMITTING"
         self.__fd = open(filepath, filemode)
-        self.__start = datetime.datetime.now(datetime.UTC)
+        self.__start = datetime.datetime.now(datetime.timezone.utc)
         if self.__log_dir is not None:
             self.__log_handler = logging.FileHandler(
                 os.path.join(self.__log_dir, f"{os.path.basename(filepath)}.log"),
@@ -203,7 +206,7 @@ class TransmitFile:
         if self.__fd is not None:
             self.__fd.close()
             self.__fd = None
-            self.__end = datetime.datetime.now(datetime.UTC)
+            self.__end = datetime.datetime.now(datetime.timezone.utc)
 
     @property
     def start(self):
@@ -224,16 +227,18 @@ class TransmitFile:
     @property
     def size(self):
         return self.__size
-    
+
     @property
     def percent(self):
-        if (self.__packets is not None and len(self.__packets) == 0) or self.__size == 0:
+        if (
+            self.__packets is not None and len(self.__packets) == 0
+        ) or self.__size == 0:
             return 1.0
         if self.__transmit_packets is not None:
-            return (1.0 - (len(self.__transmit_packets) / len(self.__packets)))
+            return 1.0 - (len(self.__transmit_packets) / len(self.__packets))
         if self.__size == 0:
             return 1.0
-        return (self.__seek / self.__size)
+        return self.__seek / self.__size
 
     @property
     def seek(self):

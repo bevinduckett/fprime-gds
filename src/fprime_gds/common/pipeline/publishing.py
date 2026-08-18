@@ -6,7 +6,6 @@ This file contains a basic publishing pipeline. It reads and writes data bound f
 :author: lestarch
 """
 
-
 from typing import Type
 
 from fprime_gds.common.data_types.ch_data import ChData
@@ -21,16 +20,14 @@ from ..models import dictionaries
 
 
 class PublishingPipeline(DataHandler, MappedRegistrar):
-    """ Pipeline for publishing
+    """Pipeline for publishing
 
     This pipeline sets up the following process:
 
     Data -> Encoder -> Client -> <wire>
     """
-    DEFAULT_ENCODERS = {
-        "FW_PACKET_LOG": EventEncoder,
-        "FW_PACKET_TELEM": ChEncoder
-    }
+
+    DEFAULT_ENCODERS = {"FW_PACKET_LOG": EventEncoder, "FW_PACKET_TELEM": ChEncoder}
 
     def __init__(self):
         """
@@ -43,25 +40,34 @@ class PublishingPipeline(DataHandler, MappedRegistrar):
         self._transport_type = ThreadedTCPSocketClient
 
     def setup(self, dictionaries):
-        """ Set up the publishing pipeline """
+        """Set up the publishing pipeline"""
         self._dictionaries = dictionaries
         self.client_socket = self.__transport_type()
-    
+
         for id, encoder_class in self.DEFAULT_ENCODERS.items():
             encoder_instance = encoder_class()
             encoder_instance.register(self.client_socket)
             self.register(id, encoder_instance)
 
+    @property
+    def dictionaries(self):
+        """
+        Get a dictionaries object
+
+        :return: dictionaries composition
+        """
+        return self._dictionaries
+
     def data_callback(self, data, sender=None):
-        """ Publish data """
+        """Publish data"""
         if isinstance(data, ChData):
             self.send_to_all("FW_PACKET_TELEM", data)
         elif isinstance(data, EventData):
             self.send_to_all("FW_PACKET_LOG", data)
         return super().data_callback(data, sender)
-    
+
     def publish_channel(self, name, value, time):
-        """ Publish channel value using name, time, and value
+        """Publish channel value using name, time, and value
 
         Looks up the channel template in the dictionary and constructs a new channel object given the time and value.
         This ChData object is then sent into the outgoing "publish" pipeline.
@@ -86,7 +92,6 @@ class PublishingPipeline(DataHandler, MappedRegistrar):
         ), "Cannot setup transport implementation type after setup"
         self.__transport_type = transport_type
 
-
     def connect(
         self, connection_uri, incoming_tag=RoutingTag.GUI, outgoing_tag=RoutingTag.GUI
     ):
@@ -103,8 +108,6 @@ class PublishingPipeline(DataHandler, MappedRegistrar):
         self.client_socket.connect(connection_uri, incoming_tag, outgoing_tag)
 
     def disconnect(self):
-        """ Disconnect from the client socket """
+        """Disconnect from the client socket"""
         if self.client_socket is not None:
             self.client_socket.disconnect()
-
-    

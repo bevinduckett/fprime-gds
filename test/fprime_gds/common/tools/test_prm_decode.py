@@ -2,6 +2,7 @@ import json
 import tempfile
 from pathlib import Path
 import pytest
+import zlib
 from fprime_gds.common.tools.params import (
     convert_json,
     decode_dat_to_params,
@@ -10,6 +11,24 @@ from fprime_gds.common.tools.params import (
     params_to_csv,
 )
 from fprime_gds.common.loaders.prm_json_loader import PrmJsonLoader
+
+
+# helper function for crc header computation
+def add_crc_header(param_data: bytes) -> bytes:
+    """
+    Add CRC32 header to parameter data.
+
+    Computes the CRC32 checksum matching PrmDb's expected format
+    and prepends it as a 4-byte big-endian header.
+
+    Args:
+        param_data: Parameter records (delimiters + sizes + IDs + values)
+
+    Returns:
+        Complete .dat file format: [CRC header][parameter data]
+    """
+    crc = (zlib.crc32(param_data, 0) ^ 0xFFFFFFFF) & 0xFFFFFFFF
+    return crc.to_bytes(4, byteorder="big") + param_data
 
 
 def test_decode_simple_paramdb():
@@ -48,7 +67,9 @@ def test_round_trip_encode_decode():
 
         # Load dictionary
         dict_parser = PrmJsonLoader(str(dict_file.resolve()))
-        id_dict, name_dict, versions = dict_parser.construct_dicts(str(dict_file.resolve()))
+        id_dict, name_dict, versions = dict_parser.construct_dicts(
+            str(dict_file.resolve())
+        )
 
         # Decode .dat back to JSON
         dat_bytes = dat_file.read_bytes()
@@ -102,7 +123,9 @@ def test_params_to_csv_format():
     # Verify CSV structure
     lines = csv_output.split("\n")
     assert len(lines) >= 2, "CSV should have header and at least one data row"
-    assert lines[0] == "Component,Parameter,Value,Type,ID", "CSV should have correct header"
+    assert (
+        lines[0] == "Component,Parameter,Value,Type,ID"
+    ), "CSV should have correct header"
 
     # Check that data rows have the right number of columns
     for line in lines[1:]:
@@ -120,8 +143,11 @@ def test_decode_invalid_delimiter():
     dict_parser = PrmJsonLoader(str(dict_file.resolve()))
     id_dict, name_dict, versions = dict_parser.construct_dicts(str(dict_file.resolve()))
 
-    # Create invalid data with wrong delimiter
-    invalid_data = b"\xFF\x00\x00\x00\x12\x00\x00\x11\x01test"
+    # Create invalid data with wrong delimiter (0xFF instead of 0xA5)
+    param_data = b"\xff\x00\x00\x00\x12\x00\x00\x11\x01test"
+
+    # Add valid CRC so it passes CRC check but fails delimiter check
+    invalid_data = add_crc_header(param_data)
 
     with pytest.raises(RuntimeError, match="Invalid delimiter"):
         decode_dat_to_params(invalid_data, id_dict)
@@ -136,7 +162,8 @@ def test_decode_unknown_param_id():
     id_dict, name_dict, versions = dict_parser.construct_dicts(str(dict_file.resolve()))
 
     # Create data with unknown parameter ID (0xFFFFFFFF)
-    invalid_data = b"\xA5\x00\x00\x00\x08\xFF\xFF\xFF\xFF\x00\x00\x00\x00"
+    param_data = b"\xa5\x00\x00\x00\x08\xff\xff\xff\xff\x00\x00\x00\x00"
+    invalid_data = add_crc_header(param_data)
 
     with pytest.raises(RuntimeError, match="Unknown parameter ID"):
         decode_dat_to_params(invalid_data, id_dict)
@@ -151,7 +178,8 @@ def test_decode_incomplete_data():
     id_dict, name_dict, versions = dict_parser.construct_dicts(str(dict_file.resolve()))
 
     # Create incomplete data (delimiter and partial record size)
-    incomplete_data = b"\xA5\x00\x00"
+    param_data = b"\xa5\x00\x00"
+    incomplete_data = add_crc_header(param_data)
 
     with pytest.raises(RuntimeError, match="Incomplete"):
         decode_dat_to_params(incomplete_data, id_dict)
@@ -184,18 +212,54 @@ def test_params_to_json_multiple_components():
 
 
 def test_decode_empty_file():
-    """Test that decoding an empty file returns empty list."""
+    """Test that decoding a file with only CRC header returns empty list."""
     dict_file = Path(__file__).parent / "resources" / "simple_dictionary.json"
 
     # Load dictionary
     dict_parser = PrmJsonLoader(str(dict_file.resolve()))
     id_dict, name_dict, versions = dict_parser.construct_dicts(str(dict_file.resolve()))
 
-    # Decode empty data
-    empty_data = b""
+    # File with only CRC header (no parameter records)
+    param_data = b""
+    empty_data = add_crc_header(param_data)
+
     params = decode_dat_to_params(empty_data, id_dict)
 
-    assert len(params) == 0, "Empty file should decode to empty list"
+    assert len(params) == 0, "File with only CRC header should decode to empty list"
+
+
+def test_decode_file_too_small():
+    """Test that decoding fails when file is smaller than CRC header."""
+    dict_file = Path(__file__).parent / "resources" / "simple_dictionary.json"
+
+    # Load dictionary
+    dict_parser = PrmJsonLoader(str(dict_file.resolve()))
+    id_dict, name_dict, versions = dict_parser.construct_dicts(str(dict_file.resolve()))
+
+    # File too small to contain CRC header
+    too_small_data = b"\x00\x00"
+
+    with pytest.raises(RuntimeError, match="File too small"):
+        decode_dat_to_params(too_small_data, id_dict)
+
+
+def test_corrupted_crc_valid_data():
+    """Test that decoding fails when CRC is corrupted but data format is correct."""
+    dict_file = Path(__file__).parent / "resources" / "simple_dictionary.json"
+
+    # Load dictionary
+    dict_parser = PrmJsonLoader(str(dict_file.resolve()))
+    id_dict, name_dict, versions = dict_parser.construct_dicts(str(dict_file.resolve()))
+
+    # Create valid parameter data
+    param_data = b"\xa5\x00\x00\x00\x08\x00\x00\x00\x01\x00\x00\x00\x64"  # param ID 1 with value 100
+    valid_data = add_crc_header(param_data)
+
+    # Corrupt the CRC by changing one byte in the header
+    corrupted_data = bytes([valid_data[0] ^ 0xFF]) + valid_data[1:]
+
+    with pytest.raises(RuntimeError, match="CRC mismatch"):
+        decode_dat_to_params(corrupted_data, id_dict)
 
 
 def test_encoder_format_conversion_array():
@@ -212,8 +276,8 @@ def test_encoder_format_conversion_array():
         "values": [
             {"value": 10, "type": "U32"},
             {"value": 20, "type": "U32"},
-            {"value": 30, "type": "U32"}
-        ]
+            {"value": 30, "type": "U32"},
+        ],
     }
 
     params = [(template, array_value)]
@@ -233,7 +297,7 @@ def test_encoder_format_conversion_struct():
     struct_value = {
         "x": {"value": 1.0, "format": "{f}", "description": "X component"},
         "y": {"value": 2.0, "format": "{f}", "description": "Y component"},
-        "z": {"value": 3.0, "format": "{f}", "description": "Z component"}
+        "z": {"value": 3.0, "format": "{f}", "description": "Z component"},
     }
 
     params = [(template, struct_value)]
@@ -269,19 +333,11 @@ def test_encoder_format_conversion_passthrough():
     template2 = PrmTemplate(2, "strParam", "comp1", U32Type, None)
     template3 = PrmTemplate(3, "listParam", "comp1", U32Type, None)
 
-    params = [
-        (template1, 123),
-        (template2, "test"),
-        (template3, [1, 2, 3])
-    ]
+    params = [(template1, 123), (template2, "test"), (template3, [1, 2, 3])]
     result = params_to_json(params)
 
     assert result == {
-        "comp1": {
-            "numParam": 123,
-            "strParam": "test",
-            "listParam": [1, 2, 3]
-        }
+        "comp1": {"numParam": 123, "strParam": "test", "listParam": [1, 2, 3]}
     }
 
 
@@ -300,14 +356,14 @@ def test_encoder_format_nested_structures():
             {
                 "x": {"value": 1.0, "format": "{f}", "description": "X"},
                 "y": {"value": 2.0, "format": "{f}", "description": "Y"},
-                "z": {"value": 3.0, "format": "{f}", "description": "Z"}
+                "z": {"value": 3.0, "format": "{f}", "description": "Z"},
             },
             {
                 "x": {"value": 4.0, "format": "{f}", "description": "X"},
                 "y": {"value": 5.0, "format": "{f}", "description": "Y"},
-                "z": {"value": 6.0, "format": "{f}", "description": "Z"}
-            }
-        ]
+                "z": {"value": 6.0, "format": "{f}", "description": "Z"},
+            },
+        ],
     }
 
     params = [(template, nested_value)]
@@ -318,7 +374,7 @@ def test_encoder_format_nested_structures():
         "comp1": {
             "nestedParam": [
                 {"x": 1.0, "y": 2.0, "z": 3.0},
-                {"x": 4.0, "y": 5.0, "z": 6.0}
+                {"x": 4.0, "y": 5.0, "z": 6.0},
             ]
         }
     }

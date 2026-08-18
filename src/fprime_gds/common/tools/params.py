@@ -1,6 +1,8 @@
 # author: zimri.leisher
 # created on: Jan 27, 2025
 
+# edited by: Specky26846 (Laura Fernandes) on June 2, 2026
+
 # allow us to use bracketed types
 from __future__ import annotations
 import json as js
@@ -27,8 +29,9 @@ from fprime_gds.common.models.serialize.numerical_types import (
 )
 from fprime_gds.common.models.serialize.serializable_type import SerializableType
 from fprime_gds.common.models.serialize.string_type import StringType
+import zlib
 
-FW_PRM_ID_TYPE_SIZE = 4 # serialized size of the FwPrmIdType
+FW_PRM_ID_TYPE_SIZE = 4  # serialized size of the FwPrmIdType
 
 
 def instantiate_prm_type(prm_val_json, prm_type: type[BaseType]):
@@ -52,21 +55,23 @@ def instantiate_prm_type(prm_val_json, prm_type: type[BaseType]):
         prm_instance,
         (I64Type, U64Type, I32Type, U32Type, I16Type, U16Type, I8Type, U8Type),
     ):
-        prm_instance.val = int(prm_val_json, 0) if isinstance(prm_val_json, str) else int(prm_val_json)
+        prm_instance.val = (
+            int(prm_val_json, 0) if isinstance(prm_val_json, str) else int(prm_val_json)
+        )
     elif isinstance(prm_instance, StringType):
         prm_instance.val = prm_val_json
     elif isinstance(prm_instance, (ArrayType, SerializableType)):
         prm_instance.val = prm_val_json
     else:
-        raise RuntimeError(
-            "Param value could not be converted to type object"
-        )
+        raise RuntimeError("Param value could not be converted to type object")
     return prm_instance
 
 
 def parsed_json_to_dat(templates_and_values: list[tuple[PrmTemplate, Any]]) -> bytes:
     """convert a list of (PrmTemplate, prm value json) to serialized bytes for a PrmDb"""
-    serialized = bytes()
+
+    # Build parameter records (delimiter + size + id + value for each param)
+    param_data = bytes()
     for template_and_value in templates_and_values:
         template, json_value = template_and_value
         prm_instance = instantiate_prm_type(json_value, template.prm_type_obj)
@@ -77,20 +82,30 @@ def parsed_json_to_dat(templates_and_values: list[tuple[PrmTemplate, Any]]) -> b
         # for an explanation of the binary format of parameters in the .dat file
 
         # delimiter
-        serialized += b"\xA5"
+        param_data += b"\xa5"
 
         record_size = FW_PRM_ID_TYPE_SIZE + len(prm_instance_bytes)
 
         # size of following data
-        serialized += record_size.to_bytes(length=4, byteorder="big")
+        param_data += record_size.to_bytes(length=4, byteorder="big")
         # id of param
-        serialized += template.prm_id.to_bytes(length=4, byteorder="big")
+        param_data += template.prm_id.to_bytes(length=4, byteorder="big")
         # value of param
-        serialized += prm_instance_bytes
+        param_data += prm_instance_bytes
+
+    # Compute CRC32 over parameter data (matching PrmDb C++ implementation)
+    # PrmDb uses: initial value 0, then final XOR with 0xFFFFFFFF
+    crc = (zlib.crc32(param_data, 0) ^ 0xFFFFFFFF) & 0xFFFFFFFF
+
+    # Prepend CRC header (4 bytes, big-endian U32)
+    serialized = crc.to_bytes(length=4, byteorder="big") + param_data
+
     return serialized
 
 
-def parsed_json_to_seq(templates_and_values: list[tuple[PrmTemplate, dict]], include_save=False) -> list[str]:
+def parsed_json_to_seq(
+    templates_and_values: list[tuple[PrmTemplate, dict]], include_save=False
+) -> list[str]:
     """convert a list of (PrmTemplate, prm value json) to a command sequence for the CmdSequencer.
     Returns a list of lines in the sequence."""
     cmds = []
@@ -98,16 +113,19 @@ def parsed_json_to_seq(templates_and_values: list[tuple[PrmTemplate, dict]], inc
     for template_and_value in templates_and_values:
         template, json_value = template_and_value
         set_cmd_name = template.comp_name + "." + template.prm_name.upper() + "_PRM_SET"
-        cmd = "R00:00:00 " + set_cmd_name + " " + str(json_value)
+        cmd = "R00:00:00 " + set_cmd_name + " " + js.dumps(json_value)
         cmds.append(cmd)
         if include_save:
-            save_cmd = template.comp_name + "." + template.prm_name.upper() + "_PRM_SAVE"
+            save_cmd = (
+                template.comp_name + "." + template.prm_name.upper() + "_PRM_SAVE"
+            )
             cmds.append(save_cmd)
     return cmds
 
 
-
-def parse_json(param_value_json, name_dict: dict[str, PrmTemplate], include_implicit_defaults=False) -> list[tuple[PrmTemplate, dict]]:
+def parse_json(
+    param_value_json, name_dict: dict[str, PrmTemplate], include_implicit_defaults=False
+) -> list[tuple[PrmTemplate, dict]]:
     """
     param_value_json: the json object read from the .json file
     name_dict: a dictionary of (fqn param name, PrmTemplate) pairs
@@ -122,9 +140,7 @@ def parse_json(param_value_json, name_dict: dict[str, PrmTemplate], include_impl
             param_temp: PrmTemplate = name_dict.get(fqn_param_name, None)
             if not param_temp:
                 raise RuntimeError(
-                    "Unable to find param "
-                    + fqn_param_name
-                    + " in dictionary"
+                    "Unable to find param " + fqn_param_name + " in dictionary"
                 )
 
     # okay, now iterate over the dict
@@ -136,7 +152,7 @@ def parse_json(param_value_json, name_dict: dict[str, PrmTemplate], include_impl
         if include_implicit_defaults:
             # there is a default value
             prm_val = prm_template.prm_default_val
-        
+
         comp_json = param_value_json.get(prm_template.comp_name, None)
         if comp_json:
             # if there is an entry for the component
@@ -144,8 +160,8 @@ def parse_json(param_value_json, name_dict: dict[str, PrmTemplate], include_impl
                 # if there is an entry for this param
                 # get the value
                 prm_val = comp_json[prm_template.prm_name]
-        
-        if not prm_val:
+
+        if prm_val is None:
             # not writing a val for this prm
             continue
 
@@ -163,10 +179,14 @@ def main_encode():
     arg_parser = ArgumentParser()
     subparsers = arg_parser.add_subparsers(dest="subcmd", required=True)
 
-
-    json_to_dat = subparsers.add_parser("dat", help="Compiles .json files into param DB .dat files")
+    json_to_dat = subparsers.add_parser(
+        "dat", help="Compiles .json files into param DB .dat files"
+    )
     json_to_dat.add_argument(
-        "json_file", type=Path, help="The .json file to turn into a .dat file", default=None
+        "json_file",
+        type=Path,
+        help="The .json file to turn into a .dat file",
+        default=None,
     )
     json_to_dat.add_argument(
         "--dictionary",
@@ -175,13 +195,23 @@ def main_encode():
         help="The dictionary file of the FSW",
         required=True,
     )
-    json_to_dat.add_argument("--defaults", action="store_true", help="Whether or not to implicitly include default parameter values in the output")
-    json_to_dat.add_argument("--output", "-o", type=Path, help="The output file", default=None)
+    json_to_dat.add_argument(
+        "--defaults",
+        action="store_true",
+        help="Whether or not to implicitly include default parameter values in the output",
+    )
+    json_to_dat.add_argument(
+        "--output", "-o", type=Path, help="The output file", default=None
+    )
 
-
-    json_to_seq = subparsers.add_parser("seq", help="Converts .json files into command sequence .seq files")
+    json_to_seq = subparsers.add_parser(
+        "seq", help="Converts .json files into command sequence .seq files"
+    )
     json_to_seq.add_argument(
-        "json_file", type=Path, help="The .json file to turn into a .seq file", default=None
+        "json_file",
+        type=Path,
+        help="The .json file to turn into a .seq file",
+        default=None,
     )
     json_to_seq.add_argument(
         "--dictionary",
@@ -190,10 +220,19 @@ def main_encode():
         help="The dictionary file of the FSW",
         required=True,
     )
-    json_to_seq.add_argument("--defaults", action="store_true", help="Whether or not to implicitly include default parameter values in the output")
-    json_to_seq.add_argument("--save", action="store_true", help="Whether or not to include the PRM_SAVE cmd in the output")
-    json_to_seq.add_argument("--output", "-o", type=Path, help="The output file", default=None)
-
+    json_to_seq.add_argument(
+        "--defaults",
+        action="store_true",
+        help="Whether or not to implicitly include default parameter values in the output",
+    )
+    json_to_seq.add_argument(
+        "--save",
+        action="store_true",
+        help="Whether or not to include the PRM_SAVE cmd in the output",
+    )
+    json_to_seq.add_argument(
+        "--output", "-o", type=Path, help="The output file", default=None
+    )
 
     args = arg_parser.parse_args()
 
@@ -220,11 +259,25 @@ def main_encode():
     # when using dat need a save attribute
     if not hasattr(args, "save"):
         args.save = False
-    
-    convert_json(args.json_file, args.dictionary, output_path, output_format, args.defaults, args.save)
+
+    convert_json(
+        args.json_file,
+        args.dictionary,
+        output_path,
+        output_format,
+        args.defaults,
+        args.save,
+    )
 
 
-def convert_json(json_file: Path, dictionary: Path, output: Path, output_format: str, implicit_defaults=False, include_save_cmd=False):
+def convert_json(
+    json_file: Path,
+    dictionary: Path,
+    output: Path,
+    output_format: str,
+    implicit_defaults=False,
+    include_save_cmd=False,
+):
 
     print("Converting", json_file, "to", output, "(format: ." + output_format + ")")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -251,7 +304,9 @@ def convert_json(json_file: Path, dictionary: Path, output: Path, output_format:
         raise RuntimeError("Invalid output format " + str(output_format))
 
 
-def decode_dat_to_params(dat_bytes: bytes, id_dict: dict[int, PrmTemplate]) -> list[tuple[PrmTemplate, Any]]:
+def decode_dat_to_params(
+    dat_bytes: bytes, id_dict: dict[int, PrmTemplate]
+) -> list[tuple[PrmTemplate, Any]]:
     """Decode a binary .dat file into a list of (PrmTemplate, value) tuples.
 
     Args:
@@ -264,31 +319,50 @@ def decode_dat_to_params(dat_bytes: bytes, id_dict: dict[int, PrmTemplate]) -> l
     Raises:
         RuntimeError: If the file format is invalid or parameters cannot be decoded
     """
-    params = []
-    offset = 0
 
-    while offset < len(dat_bytes):
+    params = []
+
+    # Read and validate CRC header (first 4 bytes)
+    if len(dat_bytes) < 4:
+        raise RuntimeError(
+            f"File too small to contain CRC header: expected at least 4 bytes, got {len(dat_bytes)}"
+        )
+
+    file_crc = int.from_bytes(dat_bytes[0:4], byteorder="big")
+    param_data = dat_bytes[4:]  # Parameter records start after CRC header
+
+    # Validate CRC
+    computed_crc = (zlib.crc32(param_data, 0) ^ 0xFFFFFFFF) & 0xFFFFFFFF
+    if file_crc != computed_crc:
+        raise RuntimeError(
+            f"CRC mismatch: file header has 0x{file_crc:08x}, computed 0x{computed_crc:08x}"
+        )
+
+    # Parse parameter records starting after CRC header
+    offset = 0  # Now relative to param_data (after CRC)
+
+    while offset < len(param_data):
         # Check for delimiter
-        if dat_bytes[offset] != 0xA5:
+        if param_data[offset] != 0xA5:
             raise RuntimeError(
-                f"Invalid delimiter at offset {offset}: expected 0xA5, got {dat_bytes[offset]:#x}"
+                f"Invalid delimiter at offset {offset + 4}: expected 0xA5, got {param_data[offset]:#x}"
             )
         offset += 1
 
         # Read record size (4 bytes, big endian)
-        if offset + 4 > len(dat_bytes):
+        if offset + 4 > len(param_data):
             raise RuntimeError(
-                f"Incomplete record size at offset {offset}: expected 4 bytes, got {len(dat_bytes) - offset}"
+                f"Incomplete record size at offset {offset + 4}: expected 4 bytes, got {len(param_data) - offset}"
             )
-        record_size = int.from_bytes(dat_bytes[offset:offset+4], byteorder="big")
+        record_size = int.from_bytes(param_data[offset : offset + 4], byteorder="big")
         offset += 4
 
         # Read parameter ID (4 bytes, big endian)
-        if offset + 4 > len(dat_bytes):
+        if offset + 4 > len(param_data):
             raise RuntimeError(
-                f"Incomplete parameter ID at offset {offset}: expected 4 bytes, got {len(dat_bytes) - offset}"
+                f"Incomplete parameter ID at offset {offset + 4}: expected 4 bytes, got {len(param_data) - offset}"
             )
-        param_id = int.from_bytes(dat_bytes[offset:offset+4], byteorder="big")
+        param_id = int.from_bytes(param_data[offset : offset + 4], byteorder="big")
         offset += 4
 
         # Look up parameter template
@@ -302,16 +376,16 @@ def decode_dat_to_params(dat_bytes: bytes, id_dict: dict[int, PrmTemplate]) -> l
         value_size = record_size - FW_PRM_ID_TYPE_SIZE
 
         # Check if we have enough data
-        if offset + value_size > len(dat_bytes):
+        if offset + value_size > len(param_data):
             raise RuntimeError(
-                f"Incomplete parameter value for {prm_template.get_full_name()} at offset {offset}: "
-                f"expected {value_size} bytes, got {len(dat_bytes) - offset}"
+                f"Incomplete parameter value for {prm_template.get_full_name()} at offset {offset + 4}: "
+                f"expected {value_size} bytes, got {len(param_data) - offset}"
             )
 
         # Deserialize the value
         prm_instance = prm_template.prm_type_obj()
         try:
-            prm_instance.deserialize(dat_bytes, offset)
+            prm_instance.deserialize(param_data, offset)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to deserialize parameter {prm_template.get_full_name()} "
@@ -354,6 +428,7 @@ def params_to_json(params: list[tuple[PrmTemplate, Any]]) -> dict:
     Returns:
         Dictionary in the JSON format used by fprime-prm-write
     """
+
     def to_encoder_format(value):
         """Convert to_jsonable() output to format expected by instantiate_prm_type()."""
         if value is None:
@@ -461,7 +536,7 @@ def params_to_csv(params: list[tuple[PrmTemplate, Any]]) -> str:
             value_str = str(value)
 
         # Escape any commas or quotes in the value
-        if ',' in value_str or '"' in value_str or '\n' in value_str:
+        if "," in value_str or '"' in value_str or "\n" in value_str:
             value_str = f'"{value_str}"'
 
         lines.append(f"{comp_name},{prm_name},{value_str},{type_name},{prm_id}")
@@ -487,9 +562,17 @@ def main_decode():
         help="The dictionary file of the FSW",
         required=True,
     )
-    arg_parser.add_argument("--format", "-f", type=str, choices=["json", "text", "csv"], default="json", help="Output format (default: json)")
-    arg_parser.add_argument("--output", "-o", type=Path, help="The output file", default=None)
-
+    arg_parser.add_argument(
+        "--format",
+        "-f",
+        type=str,
+        choices=["json", "text", "csv"],
+        default="json",
+        help="Output format (default: json)",
+    )
+    arg_parser.add_argument(
+        "--output", "-o", type=Path, help="The output file", default=None
+    )
 
     args = arg_parser.parse_args()
 
@@ -513,7 +596,9 @@ def main_decode():
     else:
         output_path = args.output
 
-    print("Decoding", args.dat_file, "to", output_path, "(format: ." + output_format + ")")
+    print(
+        "Decoding", args.dat_file, "to", output_path, "(format: ." + output_format + ")"
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Load dictionary
