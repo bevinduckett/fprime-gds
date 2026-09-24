@@ -39,6 +39,19 @@ def pytest_addoption(parser):
     for flags, specifiers in StandardPipelineParser().get_arguments().items():
         # Reduce flags to only the long option (i.e. --something) form
         flags = [flag for flag in flags if flag.startswith("--")]
+        # Suppress "store" action defaults here so that reproduce_cli_args() (used in the
+        # fprime_test_api_session fixture below) can tell an option the user actually passed on
+        # the pytest command line apart from one left at its default; only the former should be
+        # reproduced onto the command line ConfigDrivenParser parses, otherwise these defaults
+        # take precedence over the configuration file. store_true/store_false actions are left
+        # alone since their boolean defaults already round-trip correctly through
+        # reproduce_cli_args. The "real" default (from the config file, or otherwise the
+        # underlying argparse default) is still applied later by ConfigDrivenParser itself.
+        if (
+            specifiers.get("action", "store") == "store"
+            and specifiers.get("default") is not None
+        ):
+            specifiers = {**specifiers, "default": None}
         parser.addoption(*flags, **specifiers)
 
     # Add an option to specify JUnit XML report file
@@ -94,8 +107,11 @@ def fprime_test_api_session(request):
     """Create a session-level fprime test API
 
     This is a pytest session fixture. Using the options added above, this will parse the necessary options for
-    connecting the standard pipeline to the running GDS. This pipeline is supplied to the fprime test API returned as
-    the result of this fixture. This has several implications:
+    connecting the standard pipeline to the running GDS. Options not given on the pytest command line are read from
+    the fprime-gds configuration file ($FPRIME_GDS_CONFIG_PATH, else ./fprime-gds.yml), as `fprime-gds` does; the
+    plugin exposes no --config flag, so the file is selected only through that variable or the working directory.
+    This pipeline is supplied to the fprime test API returned as the result of this fixture. This has several
+    implications:
       1. APIs all use one connection to the GDS
       2. APIs and the connections are live across the whole pytest session. See fprime_test_api.
 
@@ -114,8 +130,9 @@ def fprime_test_api_session(request):
     # behavior matches fprime-gds CLI behavior). ConfigDrivenParser.parse_known_args() can NOT
     # be called with arguments=None here, as that defaults to sys.argv[1:] which is pytest's own
     # command line (e.g. -v, --color=yes) and not fprime-gds options. Instead, reproduce only the
-    # standard-pipeline flags that pytest actually parsed explicitly, and let ConfigDrivenParser
-    # fill in the rest from the configuration file.
+    # standard-pipeline flags that pytest actually parsed (i.e. those given a value on the pytest
+    # command line, since pytest_addoption() above suppresses their argparse defaults), and let
+    # ConfigDrivenParser fill in the rest from the configuration file.
     reproduced_args = pipeline_parser.reproduce_cli_args(
         request.config.known_args_namespace
     )

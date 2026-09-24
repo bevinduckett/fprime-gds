@@ -6,7 +6,6 @@
 import os
 import sys
 import copy
-import pathlib
 import webbrowser
 
 from fprime_gds.executables.cli import (
@@ -40,13 +39,6 @@ def parse_args():
         CommParser,
         PluginArgumentParser,
     ]
-    # If the FPRIME_GDS_CONFIG_PATH environment variable is set, set its value to be the default
-    # config path
-    if "FPRIME_GDS_CONFIG_PATH" in os.environ:
-        ConfigDrivenParser.set_default_configuration(
-            pathlib.Path(os.environ["FPRIME_GDS_CONFIG_PATH"])
-        )
-    # Parse the arguments, and refine through all handlers
     args, parser = ConfigDrivenParser.parse_args(
         arg_handlers, "Run F prime deployment and GDS"
     )
@@ -138,7 +130,7 @@ def launch_html(parsed_args):
     ret = launch_process(gse_args, name="HTML GUI", env=flask_env, launch_time=2)
     ui_url = f"http://{str(parsed_args.gui_addr)}:{str(parsed_args.gui_port)}/"
     print(f"[INFO] Launched UI at: {ui_url}")
-    
+
     if parsed_args.browser_auto_open:
         webbrowser.open(
             ui_url,
@@ -237,7 +229,10 @@ def main():
 
     # Add app, if possible
     if parsed_args.app:
-        if parsed_args.communication_selection == "ip" or parsed_args.application_arguments is not None:
+        if (
+            parsed_args.communication_selection == "ip"
+            or parsed_args.application_arguments is not None
+        ):
             launchers.append(launch_app)
         else:
             print(
